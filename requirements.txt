@@ -1,25 +1,13 @@
-# Core Dependencies
 streamlit==1.32.0        # Web application framework
-google-generativeai==0.3.2  # Google's Gemini AI API
 requests==2.31.0         # HTTP requests library
 beautifulsoup4>=4.12.0   # Web scraping library
 transformers==4.37.0     # Natural Language Processing library
-
-# Data Processing
 pandas==2.2.0           # Data manipulation and analysis
 numpy>=1.26.0           # Numerical computing
 scikit-learn>=1.4.0     # Machine learning library
-
-# Visualization
 matplotlib>=3.8.0       # Plotting library
 seaborn>=0.13.0         # Statistical data visualization
-
-# Utilities
 python-dotenv==1.0.0    # Environment variable management
-
-# Added from the code block
 typing-extensions==4.9.0
-
-# BERT-specific packages
-torch==2.2.0
-sentencepiece==0.1.99
+torch==2.2.0            # PyTorch for deep learning
+sentencepiece==0.1.99   # Text tokenization
