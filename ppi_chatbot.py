@@ -1,15 +1,17 @@
 import streamlit as st
+import requests
+import json
 
 # Configure page settings - MUST BE FIRST STREAMLIT COMMAND
 st.set_page_config(
-    page_title="PPI ChatCare",
-    page_icon="💊",
+    page_title="PPI Research Navigator",
+    page_icon="🔬",
     layout="wide",
     initial_sidebar_state="expanded",
     menu_items={
         'Get Help': 'https://www.example.com',
         'Report a bug': "https://www.example.com",
-        'About': "### PPI ChatCare\nVersion 2.0\n\nSmart Evidence-Based PPI Management Assistant"
+        'About': "### PPI Research Navigator\nVersion 2.0\n\nEvidence-Based PPI Research from PubMed"
     }
 )
 
@@ -17,120 +19,136 @@ import pandas as pd
 from typing import List, Dict, Any, Optional
 from datetime import datetime
 import os
-from transformers import AutoTokenizer, AutoModelForQuestionAnswering
-import torch
+import xml.etree.ElementTree as ET
+from urllib.parse import quote
 
-# Initialize BERT model
-@st.cache_resource
-def load_model():
+# Add myUpchar API key
+MYUPCHAR_API_KEY = "34f265f31c97921576cf43b3279d310be008"  # Using the provided API key
+
+def search_pubmed(query: str, max_results: int = 5) -> List[Dict[str, str]]:
+    """
+    Search PubMed using E-utilities API
+    """
     try:
-        # Using a medical BERT model
-        model_name = "medical-bert-base-uncased"  # or "emilyalsentzer/Bio_ClinicalBERT"
-        tokenizer = AutoTokenizer.from_pretrained(model_name)
-        model = AutoModelForQuestionAnswering.from_pretrained(model_name)
-        return model, tokenizer
+        # Base URL for E-utilities
+        base_url = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/"
+        api_key = "34f265f31c97921576cf43b3279d310be008"
+        
+        # Search for articles
+        search_url = f"{base_url}esearch.fcgi?db=pubmed&term={quote(query)}&retmax={max_results}&retmode=json&api_key={api_key}"
+        search_response = requests.get(search_url)
+        search_data = search_response.json()
+        
+        if 'esearchresult' not in search_data or 'idlist' not in search_data['esearchresult']:
+            return []
+        
+        # Get article details
+        article_ids = search_data['esearchresult']['idlist']
+        fetch_url = f"{base_url}efetch.fcgi?db=pubmed&id={','.join(article_ids)}&retmode=xml&api_key={api_key}"
+        fetch_response = requests.get(fetch_url)
+        
+        # Parse XML response
+        root = ET.fromstring(fetch_response.content)
+        articles = []
+        
+        for article in root.findall('.//PubmedArticle'):
+            try:
+                # Extract article information
+                title = article.find('.//ArticleTitle').text
+                abstract = article.find('.//Abstract/AbstractText')
+                abstract_text = abstract.text if abstract is not None else "No abstract available"
+                
+                # Get authors
+                authors = []
+                for author in article.findall('.//Author'):
+                    last_name = author.find('LastName')
+                    fore_name = author.find('ForeName')
+                    if last_name is not None and fore_name is not None:
+                        authors.append(f"{fore_name.text} {last_name.text}")
+                
+                # Get publication date
+                pub_date = article.find('.//PubDate')
+                year = pub_date.find('Year').text if pub_date is not None else "Unknown"
+                
+                # Get DOI
+                doi = article.find('.//ELocationID[@EIdType="doi"]')
+                doi_text = doi.text if doi is not None else None
+                
+                # Create article dictionary
+                article_dict = {
+                    'title': title,
+                    'abstract': abstract_text,
+                    'authors': authors,
+                    'year': year,
+                    'doi': doi_text,
+                    'url': f"https://pubmed.ncbi.nlm.nih.gov/{article.find('.//PMID').text}/"
+                }
+                articles.append(article_dict)
+            except Exception as e:
+                continue
+        
+        return articles
     except Exception as e:
-        st.error(f"Error loading model: {str(e)}")
-        return None, None
+        st.error(f"Error searching PubMed: {str(e)}")
+        return []
 
-def get_bert_response(messages: List[dict]) -> tuple[str, List[Dict[str, str]]]:
+def get_pubmed_response(messages: List[dict]) -> tuple[str, List[Dict[str, str]]]:
     """
-    Get response from BERT model
+    Get response using PubMed E-utilities
     """
     try:
-        model, tokenizer = load_model()
-        if model is None or tokenizer is None:
-            return "Error: Model not loaded properly", []
-
         # Get the last user message
         last_user_message = next((msg["content"] for msg in reversed(messages) if msg["role"] == "user"), "")
         
-        # Create context from our PPI knowledge base
-        context = """
-        Proton Pump Inhibitors (PPIs) are medications that reduce stomach acid production. Common PPIs include omeprazole, esomeprazole, lansoprazole, and pantoprazole.
+        # Add "proton pump inhibitor" to the query if not present
+        if "ppi" not in last_user_message.lower() and "proton pump inhibitor" not in last_user_message.lower():
+            query = f"{last_user_message} proton pump inhibitor"
+        else:
+            query = last_user_message
         
-        Key PPI Information:
-        1. Indications: GERD, peptic ulcers, H. pylori infection
-        2. Dosing: Usually once daily before meals
-        3. Common side effects: headache, diarrhea, abdominal pain
-        4. Drug interactions: clopidogrel, warfarin, iron supplements
-        5. Long-term risks: vitamin B12 deficiency, bone fractures, kidney issues
+        # Show loading message
+        with st.spinner('Searching PubMed...'):
+            # Search PubMed
+            articles = search_pubmed(query)
         
-        Clinical Guidelines:
-        - ACG Guidelines recommend PPIs for GERD management
-        - FDA warns about long-term use risks
-        - Regular monitoring recommended for chronic users
-        """
+        if not articles:
+            return "No relevant articles found. Please try rephrasing your question.", []
         
-        # Prepare input for BERT
-        inputs = tokenizer(
-            last_user_message,
-            context,
-            return_tensors="pt",
-            max_length=512,
-            truncation=True,
-            padding=True
-        )
+        # Format response
+        response_text = "Based on recent medical literature:\n\n"
+        for i, article in enumerate(articles, 1):
+            response_text += f"[{i}] {article['title']}\n"
+            response_text += f"Authors: {', '.join(article['authors'])}\n"
+            response_text += f"Year: {article['year']}\n"
+            response_text += f"Abstract: {article['abstract'][:200]}...\n\n"
         
-        # Get model prediction
-        outputs = model(**inputs)
-        
-        # Get start and end positions
-        start_scores = outputs.start_logits
-        end_scores = outputs.end_logits
-        
-        # Get the most likely answer span
-        start_idx = torch.argmax(start_scores)
-        end_idx = torch.argmax(end_scores)
-        
-        # Convert tokens to text
-        answer = tokenizer.convert_tokens_to_string(
-            tokenizer.convert_ids_to_tokens(
-                inputs["input_ids"][0][start_idx:end_idx+1]
-            )
-        )
-        
-        # Format response with references
-        response_text = f"""
-        Based on the available medical literature and guidelines:
-        
-        {answer}
-        
-        References:
-        [1] American College of Gastroenterology Guidelines (2022)
-        [2] FDA Safety Communication on PPIs (2023)
-        [3] Clinical Practice Update on PPI Use (2020)
-        """
-        
-        # Extract references
-        references = [
-            {
-                "number": "1",
-                "text": "American College of Gastroenterology Guidelines (2022)",
-                "url": "https://journals.lww.com/ajg/fulltext/2022/01000/american_college_of_gastroenterology_clinical.14.aspx"
-            },
-            {
-                "number": "2",
-                "text": "FDA Safety Communication on PPIs (2023)",
-                "url": "https://www.fda.gov/drugs/postmarket-drug-safety-information-patients-and-providers/proton-pump-inhibitors-ppis"
-            },
-            {
-                "number": "3",
-                "text": "Clinical Practice Update on PPI Use (2020)",
-                "url": "https://www.gastrojournal.org/article/S0016-5085(20)30065-5/fulltext"
-            }
-        ]
+        # Create references
+        references = []
+        for i, article in enumerate(articles, 1):
+            references.append({
+                "number": str(i),
+                "text": f"{article['title']} ({article['year']})",
+                "url": article['url']
+            })
         
         return response_text, references
         
     except Exception as e:
+        st.error(f"""
+        Error generating response: {str(e)}
+        
+        Please try:
+        1. Refreshing the page
+        2. Asking your question again
+        3. If the error persists, try a different question
+        """)
         return f"Error generating response: {str(e)}", []
 
 def process_user_message(prompt):
     # Add user message
     st.session_state.messages.append({"role": "user", "content": prompt})
     # Get and display assistant response
-    response, references = get_bert_response(st.session_state.messages)
+    response, references = get_pubmed_response(st.session_state.messages)
     st.session_state.messages.append({
         "role": "assistant",
         "content": response,
@@ -883,9 +901,9 @@ col1, col2 = st.columns([3, 1])
 with col1:
     st.markdown("""
     <div style='text-align: center; margin-bottom: 2.5rem; padding: 2rem; background: #ffffff; border-radius: 16px; box-shadow: 0 4px 6px rgba(0,0,0,0.1);'>
-        <h1 class='welcome-header' style='font-weight: 700; margin-bottom: 0.5rem;'>Welcome to PPIChatCare by MedAI Labs</h1>
-        <h3 class='welcome-subheader' style='font-weight: 500; margin-top: 0;'>A comprehensive clinical decision support tool for optimal PPI therapy.</h3>
-        <p class='welcome-header' style='font-size: 1.1rem; margin-top: 1rem; line-height: 1.6;'>Rapidly assess appropriate indications, detect clinically significant drug interactions, and access personalized deprescribing guidance—seamlessly integrated for your workflow.</p>
+        <h1 class='welcome-header' style='font-weight: 700; margin-bottom: 0.5rem;'>PPI Research Navigator</h1>
+        <h3 class='welcome-subheader' style='font-weight: 500; margin-top: 0;'>Explore Latest PPI Research from PubMed-Indexed Journals</h3>
+        <p class='welcome-header' style='font-size: 1.1rem; margin-top: 1rem; line-height: 1.6;'>Access evidence-based information on Proton Pump Inhibitors, including clinical trials, systematic reviews, and recent advancements in PPI therapy and safety.</p>
     </div>
     """, unsafe_allow_html=True)
 
@@ -1066,36 +1084,6 @@ with st.sidebar:
         st.markdown(handout_content)
         st.markdown("</div>", unsafe_allow_html=True)
 
-    with st.expander("Deprescribing Guidelines", expanded=True):
-        st.markdown("### 📊 Deprescribing Strategies")
-        
-        # Create a DataFrame for the strategies table
-        strategies_data = {
-            "Strategy": ["Dose Reduction", "On-Demand Therapy", "Switch to H2RA", "Abrupt Discontinuation"],
-            "Description": [
-                "Gradually reduce PPI dose (e.g., from twice daily to once daily)",
-                "Use PPI only when symptoms occur",
-                "Replace PPI with an H2RA (e.g., ranitidine, famotidine)",
-                "Stop PPI therapy without tapering"
-            ],
-            "Evidence/Notes": [
-                "Recommended for patients on high-dose PPI therapy. May reduce risk of rebound acid hypersecretion",
-                "Suitable for patients with intermittent symptoms. May lead to increased symptom relapse compared to continuous therapy",
-                "May be considered for patients with mild symptoms. Higher risk of symptom relapse compared to continued PPI use",
-                "May lead to rebound acid hypersecretion and symptom recurrence. Tapering is generally preferred"
-            ]
-        }
-        
-        df = pd.DataFrame(strategies_data).set_index('Strategy')
-        st.table(df)
-        
-        st.markdown("### 📚 Additional Resources")
-        st.markdown("""
-        - [AGA Clinical Practice Update on PPI Deprescribing](https://www.gastrojournal.org/article/S0016-5085(20)30065-5/fulltext)
-        - [Deprescribing.org PPI Guidelines](https://deprescribing.org/resources/deprescribing-guidelines-algorithms/)
-        - [FDA Medication Guides](https://www.fda.gov/drugs/drug-safety-and-availability/fda-drug-safety-communication-possible-increased-risk-fractures-hip-wrist-and-spine-use-proton-pump)
-        """)
-
 # Add PPI warning signs section
 with st.sidebar:
     st.markdown("---")
@@ -1174,4 +1162,87 @@ with st.sidebar:
         </p>
     </div>
     """, unsafe_allow_html=True)
+
+def search_medicines(name=None, limit=10):
+    """
+    Search medicines using RxNorm API
+    """
+    try:
+        base_url = "https://rxnav.nlm.nih.gov/REST/drugs.json"
+        params = {
+            "name": name if name else "",
+            "maxEntries": limit
+        }
+        
+        response = requests.get(base_url, params=params)
+        
+        if response.status_code == 200:
+            data = response.json()
+            return data
+        else:
+            st.error(f"API Error: {response.status_code} - {response.text}")
+            return None
+    except Exception as e:
+        st.error(f"Error searching medicines: {str(e)}")
+        return None
+
+def get_drug_details(rxcui):
+    """
+    Get detailed drug information using RxNorm API
+    """
+    try:
+        base_url = f"https://rxnav.nlm.nih.gov/REST/rxcui/{rxcui}/allrelated.json"
+        response = requests.get(base_url)
+        
+        if response.status_code == 200:
+            return response.json()
+        return None
+    except Exception as e:
+        st.error(f"Error fetching drug details: {str(e)}")
+        return None
+
+# Add medicine search section to the sidebar
+with st.sidebar:
+    st.markdown("---")
+    st.markdown("""
+    <div style='text-align: center; margin-bottom: 1rem;'>
+        <h3 style='color: #2563eb; font-weight: 700;'>Medicine Search</h3>
+        <p style='color: #666; font-size: 0.9rem;'>Search medications using RxNorm database</p>
+    </div>
+    """, unsafe_allow_html=True)
+    
+    with st.expander("Search Medicines", expanded=True):
+        # Search filters
+        medicine_name = st.text_input("Medicine Name", placeholder="Enter medicine name (e.g., Rabeprazole)")
+        
+        # Search button
+        if st.button("Search Medicines"):
+            if not medicine_name:
+                st.warning("Please enter a medicine name")
+            else:
+                with st.spinner("Searching medicines..."):
+                    results = search_medicines(name=medicine_name)
+                    
+                    if results and "drugGroup" in results and "conceptGroup" in results["drugGroup"]:
+                        concept_groups = results["drugGroup"]["conceptGroup"]
+                        st.markdown("### Search Results")
+                        
+                        for group in concept_groups:
+                            if "conceptProperties" in group:
+                                for drug in group["conceptProperties"]:
+                                    rxcui = drug.get('rxcui', '')
+                                    rxnorm_url = f"https://mor.nlm.nih.gov/RxNav/search?searchBy=RXCUI&searchTerm={rxcui}"
+                                    
+                                    st.markdown(f"""
+                                    <div style='background-color: #f8f9fa; padding: 15px; border-radius: 10px; margin: 10px 0;'>
+                                        <h4 style='color: #2563eb; margin-bottom: 5px;'>{drug.get('name', 'N/A')}</h4>
+                                        <p style='margin-bottom: 5px;'><strong>Type:</strong> {drug.get('tty', 'N/A')}</p>
+                                        <p style='margin-bottom: 5px;'><strong>RxCUI:</strong> {rxcui}</p>
+                                        <a href='{rxnorm_url}' target='_blank' style='color: #2563eb; text-decoration: none;'>
+                                            🔗 View on RxNorm
+                                        </a>
+                                    </div>
+                                    """, unsafe_allow_html=True)
+                    else:
+                        st.info("No medicines found matching your criteria")
 
