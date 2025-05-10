@@ -5,6 +5,26 @@ import json
 import pandas as pd
 from typing import List, Dict, Any, Optional
 from datetime import datetime
+import os
+from dotenv import load_dotenv
+
+# Load environment variables
+load_dotenv()
+
+# Initialize Gemini API with embedded key
+GEMINI_API_KEY = "AIzaSyDI1rThJnlYthhM2BgcggsZTqIacuXinKw"  # Your new API key
+
+# Debug information
+st.write("API Key Status:", "Present" if GEMINI_API_KEY else "Missing")
+
+try:
+    genai.configure(api_key=GEMINI_API_KEY)
+    # Test the configuration
+    model = genai.GenerativeModel('gemini-1.5-pro')
+    st.write("API Configuration Status: Success")
+except Exception as e:
+    st.error(f"Error configuring the Gemini API: {str(e)}")
+    st.stop()
 
 # Place get_gemini_response function here so it is defined before use
 
@@ -684,15 +704,6 @@ st.markdown("""
         }
     </style>
 """, unsafe_allow_html=True)
-
-# Initialize Gemini API with embedded key
-GEMINI_API_KEY = "AIzaSyDI1rThJnlYthhM2BgcggsZTqIacuXinKw"
-
-try:
-    genai.configure(api_key=GEMINI_API_KEY)
-except Exception as e:
-    st.error(f"Error configuring the Gemini API: {e}")
-    st.stop()
 
 # Initialize session state
 if "messages" not in st.session_state:
