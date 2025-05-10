@@ -686,7 +686,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # Initialize Gemini API with embedded key
-GEMINI_API_KEY = "AIzaSyDa-JQYr1mIKFA1uZW0beknpdOyIC_khdc"
+GEMINI_API_KEY = "AIzaSyDI1rThJnlYthhM2BgcggsZTqIacuXinKw"
 
 try:
     genai.configure(api_key=GEMINI_API_KEY)
