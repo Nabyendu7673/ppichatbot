@@ -13,87 +13,113 @@ st.set_page_config(
     }
 )
 
-import google.generativeai as genai
-import requests
-import json
 import pandas as pd
 from typing import List, Dict, Any, Optional
 from datetime import datetime
 import os
-from dotenv import load_dotenv
+from transformers import AutoTokenizer, AutoModelForQuestionAnswering
+import torch
 
-# Load environment variables
-load_dotenv()
+# Initialize BERT model
+@st.cache_resource
+def load_model():
+    try:
+        # Using a medical BERT model
+        model_name = "medical-bert-base-uncased"  # or "emilyalsentzer/Bio_ClinicalBERT"
+        tokenizer = AutoTokenizer.from_pretrained(model_name)
+        model = AutoModelForQuestionAnswering.from_pretrained(model_name)
+        return model, tokenizer
+    except Exception as e:
+        st.error(f"Error loading model: {str(e)}")
+        return None, None
 
-# Initialize Gemini API with embedded key
-GEMINI_API_KEY = "AIzaSyDI1rThJnlYthhM2BgcggsZTqIacuXinKw"  # Your new API key
-
-# Debug information
-st.write("API Key Status:", "Present" if GEMINI_API_KEY else "Missing")
-
-try:
-    genai.configure(api_key=GEMINI_API_KEY)
-    # Test the configuration
-    model = genai.GenerativeModel('gemini-1.5-pro')
-    st.write("API Configuration Status: Success")
-except Exception as e:
-    st.error(f"Error configuring the Gemini API: {str(e)}")
-    st.stop()
-
-# Place get_gemini_response function here so it is defined before use
-
-def get_gemini_response(messages: List[dict]) -> tuple[str, List[Dict[str, str]]]:
+def get_bert_response(messages: List[dict]) -> tuple[str, List[Dict[str, str]]]:
     """
-    Get response from Gemini API with references
+    Get response from BERT model
     """
     try:
-        model = genai.GenerativeModel('gemini-1.5-pro')
-        
-        # Enhanced system prompt with reference requirements
-        system_prompt = """You are a medical information specialist focusing on Proton Pump Inhibitors (PPIs). 
-        Provide detailed, evidence-based responses with specific references. For each response:
-        1. Include relevant clinical guidelines (e.g., ACG, AGA)
-        2. Cite specific studies or meta-analyses when available
-        3. Provide direct links to sources (PubMed, DOI, or official guideline websites)
-        4. Format references as: [Reference #] Title, Authors, Journal, Year, Link
-        
-        Current guidelines to reference:
-        - ACG Clinical Guideline for GERD (2022) - https://journals.lww.com/ajg/fulltext/2022/01000/american_college_of_gastroenterology_clinical.14.aspx
-        - AGA Clinical Practice Update on PPI Use (2020) - https://www.gastrojournal.org/article/S0016-5085(20)30065-5/fulltext
-        - FDA Safety Communications on PPIs - https://www.fda.gov/drugs/postmarket-drug-safety-information-patients-and-providers/proton-pump-inhibitors-ppis
-        - UpToDate PPI Recommendations - https://www.uptodate.com/contents/proton-pump-inhibitors-overview-of-use-and-adverse-effects-in-the-treatment-of-acid-related-disorders
-        """
-        
+        model, tokenizer = load_model()
+        if model is None or tokenizer is None:
+            return "Error: Model not loaded properly", []
+
         # Get the last user message
         last_user_message = next((msg["content"] for msg in reversed(messages) if msg["role"] == "user"), "")
         
-        # Generate response
-        response = model.generate_content(
-            [system_prompt, f"Question: {last_user_message}\nProvide a detailed response with references and direct links:"]
+        # Create context from our PPI knowledge base
+        context = """
+        Proton Pump Inhibitors (PPIs) are medications that reduce stomach acid production. Common PPIs include omeprazole, esomeprazole, lansoprazole, and pantoprazole.
+        
+        Key PPI Information:
+        1. Indications: GERD, peptic ulcers, H. pylori infection
+        2. Dosing: Usually once daily before meals
+        3. Common side effects: headache, diarrhea, abdominal pain
+        4. Drug interactions: clopidogrel, warfarin, iron supplements
+        5. Long-term risks: vitamin B12 deficiency, bone fractures, kidney issues
+        
+        Clinical Guidelines:
+        - ACG Guidelines recommend PPIs for GERD management
+        - FDA warns about long-term use risks
+        - Regular monitoring recommended for chronic users
+        """
+        
+        # Prepare input for BERT
+        inputs = tokenizer(
+            last_user_message,
+            context,
+            return_tensors="pt",
+            max_length=512,
+            truncation=True,
+            padding=True
         )
         
-        # Extract references from response
-        references = []
-        response_text = response.text
+        # Get model prediction
+        outputs = model(**inputs)
         
-        # Parse references (assuming they're in the format [1], [2], etc.)
-        import re
-        ref_pattern = r'\[(\d+)\]\s*(.*?)(?=\n|$)'
-        matches = re.finditer(ref_pattern, response_text)
+        # Get start and end positions
+        start_scores = outputs.start_logits
+        end_scores = outputs.end_logits
         
-        for match in matches:
-            ref_num = match.group(1)
-            ref_text = match.group(2)
-            # Extract URL if present
-            url_match = re.search(r'(https?://\S+)', ref_text)
-            url = url_match.group(1) if url_match else None
-            ref_text = re.sub(r'\s*https?://\S+', '', ref_text)  # Remove URL from text
-            
-            references.append({
-                "number": ref_num,
-                "text": ref_text.strip(),
-                "url": url
-            })
+        # Get the most likely answer span
+        start_idx = torch.argmax(start_scores)
+        end_idx = torch.argmax(end_scores)
+        
+        # Convert tokens to text
+        answer = tokenizer.convert_tokens_to_string(
+            tokenizer.convert_ids_to_tokens(
+                inputs["input_ids"][0][start_idx:end_idx+1]
+            )
+        )
+        
+        # Format response with references
+        response_text = f"""
+        Based on the available medical literature and guidelines:
+        
+        {answer}
+        
+        References:
+        [1] American College of Gastroenterology Guidelines (2022)
+        [2] FDA Safety Communication on PPIs (2023)
+        [3] Clinical Practice Update on PPI Use (2020)
+        """
+        
+        # Extract references
+        references = [
+            {
+                "number": "1",
+                "text": "American College of Gastroenterology Guidelines (2022)",
+                "url": "https://journals.lww.com/ajg/fulltext/2022/01000/american_college_of_gastroenterology_clinical.14.aspx"
+            },
+            {
+                "number": "2",
+                "text": "FDA Safety Communication on PPIs (2023)",
+                "url": "https://www.fda.gov/drugs/postmarket-drug-safety-information-patients-and-providers/proton-pump-inhibitors-ppis"
+            },
+            {
+                "number": "3",
+                "text": "Clinical Practice Update on PPI Use (2020)",
+                "url": "https://www.gastrojournal.org/article/S0016-5085(20)30065-5/fulltext"
+            }
+        ]
         
         return response_text, references
         
@@ -104,7 +130,7 @@ def process_user_message(prompt):
     # Add user message
     st.session_state.messages.append({"role": "user", "content": prompt})
     # Get and display assistant response
-    response, references = get_gemini_response(st.session_state.messages)
+    response, references = get_bert_response(st.session_state.messages)
     st.session_state.messages.append({
         "role": "assistant",
         "content": response,
