@@ -1,4 +1,18 @@
 import streamlit as st
+
+# Configure page settings - MUST BE FIRST STREAMLIT COMMAND
+st.set_page_config(
+    page_title="PPI ChatCare",
+    page_icon="💊",
+    layout="wide",
+    initial_sidebar_state="expanded",
+    menu_items={
+        'Get Help': 'https://www.example.com',
+        'Report a bug': "https://www.example.com",
+        'About': "### PPI ChatCare\nVersion 2.0\n\nSmart Evidence-Based PPI Management Assistant"
+    }
+)
+
 import google.generativeai as genai
 import requests
 import json
@@ -345,19 +359,6 @@ def get_interaction_score_color(score: int) -> str:
         return "#FFFF00"  # Yellow for low risk
     else:
         return "#00FF00"  # Green for no risk
-
-# Configure page settings - MUST BE FIRST STREAMLIT COMMAND
-st.set_page_config(
-    page_title="PPI ChatCare",
-    page_icon="💊",
-    layout="wide",
-    initial_sidebar_state="expanded",
-    menu_items={
-        'Get Help': 'https://www.example.com',
-        'Report a bug': "https://www.example.com",
-        'About': "### PPI ChatCare\nVersion 2.0\n\nSmart Evidence-Based PPI Management Assistant"
-    }
-)
 
 # Custom CSS for a modern, visually appealing chat UI
 st.markdown("""
